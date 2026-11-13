@@ -1,0 +1,38 @@
+{
+  "name": "pocket-option-llm-bot",
+  "version": "1.0.0",
+  "description": "Telegram-бот з WebApp: направление решает локальная LLM по сегментам (currency / otc)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "concurrently \"node server.js\" \"node bot.js\"",
+    "bot": "node bot.js",
+    "server": "node server.js",
+    "check": "node --check server.js && node --check llmCore.js && node --check po-socket.js && node --check bot.js && node --check journal.js && node --check tracker.js && node --check timeframes.js && node --check candles.js && node --check analyzer.js && node --check config/index.js && node --check po-capture.js && node --check tools/history_download.js && node --check tools/history_lib.js && node --check tools/collect_candles.js && node --check public/js/app.js",
+    "test": "node --test tests/*.mjs",
+    "test:py": "python3 train/test_pipeline.py && python3 llm/test_llm_server.py && python3 ml/test_ml.py",
+    "test:all": "npm run check && npm test && npm run test:py"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "pocket-option",
+    "trading",
+    "signals"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.20.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.64.0",
+    "technicalindicators": "^3.1.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}

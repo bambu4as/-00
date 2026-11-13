@@ -1,0 +1,34 @@
+{
+  "timeframe_min": 1,
+  "days": 365,
+  "pairs": [
+    "EUR/USD OTC",
+    "GBP/USD OTC",
+    "USD/JPY OTC",
+    "USD/CAD OTC",
+    "AUD/USD OTC",
+    "NZD/USD OTC",
+    "EUR/JPY OTC",
+    "GBP/JPY OTC",
+    "CAD/JPY OTC",
+    "CHF/JPY OTC",
+    "AUD/CAD OTC",
+    "EUR/AUD OTC"
+  ],
+  "request": {
+    "event": "loadHistoryPeriod",
+    "fields": {
+      "asset": "{asset}",
+      "index": "{index}",
+      "time": "{before}",
+      "offset": "{offset}",
+      "period": "{period}"
+    }
+  },
+  "batch_timeout_ms": 15000,
+  "min_interval_ms": 500,
+  "max_stalls": 3,
+  "checkpoint_every": 100,
+  "window_sec": 9000,
+  "period_sec": 60
+}

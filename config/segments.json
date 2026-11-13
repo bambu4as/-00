@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "payout": 0.8,
+  "implemented_features": [
+    "returns20"
+  ],
+  "segments": {
+    "currency": {
+      "description": "Обычные валютные пары (имя без OTC)",
+      "match": "regular",
+      "features": [
+        "returns20"
+      ],
+      "llm_url_env": "LLM_URL_CURRENCY",
+      "min_test_trades": 1000
+    },
+    "otc": {
+      "description": "OTC-пары (имя содержит OTC), формирует брокер",
+      "match": "otc",
+      "features": [
+        "returns20"
+      ],
+      "llm_url_env": "LLM_URL_OTC",
+      "min_test_trades": 1000
+    }
+  },
+  "timeframes_sec": [
+    5,
+    15,
+    30,
+    60,
+    180,
+    300
+  ]
+}

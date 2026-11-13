@@ -1,0 +1,333 @@
+/**
+ * app.js v4 — WebApp клієнт
+ * ✅ FIX: guard поза Telegram (stub замість crash)
+ * ✅ NEW: cooldown (екран + таймер + sendData боту)
+ * ✅ FIXED: всі синтаксичні помилки та сумісність полей з backend (signals.js)
+ */
+const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : {
+  ready() {}, expand() {}, sendData() {},
+  HapticFeedback: { impactOccurred() {}, notificationOccurred() {} }
+};
+tg.ready();
+tg.expand();
+
+const state = { selectedPair: null, selectedTimeframe: null, pairs: [] };
+const API_BASE = '';
+const COOLDOWN_SEC = { 1: 55, 3: 175, 5: 295 };
+let cooldownInterval = null;
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function cdKey() { return `cd_${state.selectedPair}_${state.selectedTimeframe}`; }
+function cdRemaining() {
+  const until = parseInt(localStorage.getItem(cdKey()) || '0', 10);
+  return Math.max(0, until - Date.now());
+}
+function cdStart() {
+  const sec = COOLDOWN_SEC[state.selectedTimeframe] || 55;
+  localStorage.setItem(cdKey(), String(Date.now() + sec * 1000));
+}
+function fmtMS(ms) {
+  const s = Math.ceil(ms / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+function showCooldown(remainingMs) {
+  document.getElementById('cooldown-pair').textContent =
+    `${state.selectedPair} (${state.selectedTimeframe} хв)`;
+  document.getElementById('cooldown-timer').textContent = fmtMS(remainingMs);
+  showScreen('screen-cooldown');
+  clearInterval(cooldownInterval);
+  cooldownInterval = setInterval(() => {
+    const left = cdRemaining();
+    document.getElementById('cooldown-timer').textContent = fmtMS(left);
+    if (left <= 0) {
+      clearInterval(cooldownInterval);
+      showScreen('screen-timeframe');
+    }
+  }, 500);
+  tg.sendData(JSON.stringify({
+    type: 'cooldown', pair: state.selectedPair,
+    timeframe: state.selectedTimeframe, remaining: Math.ceil(remainingMs / 1000)
+  }));
+}
+
+async function loadPairs(filter = 'all') {
+  try {
+    const res = await fetch(`${API_BASE}/api/pairs?filter=${filter}`);
+    const data = await res.json();
+    state.pairs = data.pairs;
+    renderPairs(data.pairs);
+  } catch (err) { console.error('❌ Помилка завантаження пар:', err); }
+}
+
+function renderPairs(pairs) {
+  const container = document.getElementById('pairs-list');
+  container.innerHTML = '';
+  pairs.forEach(pair => {
+    const card = document.createElement('div');
+    card.className = 'pair-card';
+    card.innerHTML =
+      `<div class="pair-flags">${pair.flag1}${pair.flag2}</div>
+       <div class="pair-info">
+         <div class="pair-name">${pair.name}</div>
+         <span class="pair-badge ${pair.type}">${pair.type === 'otc' ? 'OTC' : 'Валюта'}</span>
+       </div>
+       <div class="pair-arrow">›</div>`;
+    card.addEventListener('click', () => selectPair(pair));
+    container.appendChild(card);
+  });
+}
+
+function selectPair(pair) {
+  state.selectedPair = pair.name;
+  document.getElementById('selected-pair-name').textContent = pair.name;
+  showScreen('screen-timeframe');
+  tg.HapticFeedback.impactOccurred('light');
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadPairs(btn.dataset.filter);
+    tg.HapticFeedback.impactOccurred('light');
+  });
+});
+
+document.querySelectorAll('.tf-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    state.selectedTimeframe = parseInt(btn.dataset.tf);
+    document.getElementById('btn-get-signal').disabled = false;
+    tg.HapticFeedback.impactOccurred('medium');
+  });
+});
+
+async function requestSignal() {
+  if (!state.selectedPair || !state.selectedTimeframe) return;
+  const left = cdRemaining();
+  if (left > 0) { showCooldown(left); return; }
+  tg.HapticFeedback.impactOccurred('heavy');
+  showScreen('screen-loading');
+  document.getElementById('loading-detail').textContent = 'Запит свічок від PO...';
+  try {
+    const res = await fetch(`${API_BASE}/api/signal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ pair: state.selectedPair, timeframe: state.selectedTimeframe })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      alert('Помилка: ' + (data.error || 'Невідома помилка сервера'));
+      showScreen('screen-timeframe');
+      return;
+    }
+    cdStart();
+    showResult(data);
+    tg.sendData(JSON.stringify({
+      type: 'signal_result', 
+      pair: data.pair || state.selectedPair, 
+      timeframe: data.timeframe || state.selectedTimeframe,
+      direction: data.direction || data.action, 
+      accuracy: data.accuracy || data.confidence,
+      strength: data.strength, 
+      expiry: data.expiry, 
+      factors: data.factors
+    }));
+  } catch (err) {
+    console.error('❌ Помилка fetch:', err);
+    alert('Помилка отримання сигналу. Перевірте з\'єднання.');
+    showScreen('screen-timeframe');
+  }
+}
+
+document.getElementById('btn-get-signal').addEventListener('click', requestSignal);
+document.getElementById('btn-new-signal').addEventListener('click', requestSignal);
+
+function showResult(data) {
+  const safe = (v, fb = '—') => (v !== undefined && v !== null ? v : fb);
+
+  // 1. Пару и таймфрейм
+  document.getElementById('result-pair').textContent = safe(data.pair, state.selectedPair);
+  document.getElementById('result-tf').textContent = safe(data.timeframe, state.selectedTimeframe) + ' хв';
+
+  // 2. Точность / Уверенность (accuracy || confidence)
+  const acc = safe(data.accuracy ?? data.confidence, 0);
+  document.getElementById('result-accuracy').textContent = acc + '%';
+  const fill = document.getElementById('progress-fill');
+  fill.style.width = '0%';
+  setTimeout(() => { fill.style.width = acc + '%'; }, 100);
+
+  // 3. Сила сигнала (strength || вычисление из confidence)
+  let strength = data.strength;
+  if (!strength && (data.confidence !== undefined || data.accuracy !== undefined)) {
+    const score = data.accuracy ?? data.confidence;
+    strength = score >= 80 ? 'СИЛЬНИЙ' : score >= 65 ? 'СЕРЕДНІЙ' : 'СЛАБКИЙ';
+  }
+  strength = safe(strength, 'СЛАБКИЙ');
+
+  const strengthEl = document.getElementById('result-strength');
+  strengthEl.textContent = (strength === 'СИЛЬНИЙ' ? '✅ ' : '') + strength;
+  strengthEl.className = 'strength-wrap ' +
+    (strength === 'СИЛЬНИЙ' ? 'strong' : strength === 'СЕРЕДНІЙ' ? 'medium' : 'weak');
+
+  // 4. Направление (direction || action)
+  const direction = data.direction || data.action;
+  const dirBox = document.getElementById('direction-box');
+  const dirArrow = document.getElementById('direction-arrow');
+  const dirText = document.getElementById('direction-text');
+  const dirExpiry = document.getElementById('direction-expiry');
+  const dirDot = document.getElementById('direction-dot');
+
+  dirBox.className = 'direction-box';
+  if (direction === 'CALL') {
+    dirBox.classList.add('call'); dirArrow.textContent = '↑';
+    dirText.textContent = 'ВВЕРХ'; dirDot.textContent = '🟢';
+  } else if (direction === 'PUT') {
+    dirBox.classList.add('put'); dirArrow.textContent = '↓';
+    dirText.textContent = 'ВНИЗ'; dirDot.textContent = '🔴';
+  } else {
+    dirBox.classList.add('wait'); dirArrow.textContent = '—';
+    dirText.textContent = 'ОЧІКУВАННЯ'; dirDot.textContent = '';
+  }
+
+  const expiry = data.expiry || (state.selectedTimeframe ? `${state.selectedTimeframe} хв` : '—');
+  dirExpiry.textContent = safe(expiry) !== '—' ? 'до ' + safe(expiry) : '';
+
+  // 5. Индикаторы и OTC
+  renderIndicators(data.indicators || {});
+  renderOtcStats(data.otc || null);
+
+  // 6. Факторы (факторы могут прийти массивом factors или строкой reason)
+  const factorsList = document.getElementById('factors-list');
+  factorsList.innerHTML = '';
+
+  let factors = data.factors;
+  if (!factors && data.reason) {
+    // Парсим строку reason от signals.js в массив
+    factors = data.reason.split(' | ').map(item => {
+      const match = item.match(/\[(.*?)\]/);
+      return match ? match[1] : item;
+    });
+  }
+
+  factors = factors || [];
+
+  if (Array.isArray(factors) && factors.length > 0) {
+    factors.forEach(f => {
+      const li = document.createElement('li'); 
+      li.textContent = f; 
+      factorsList.appendChild(li);
+    });
+  } else {
+    const li = document.createElement('li');
+    li.textContent = 'Недостатньо факторів'; 
+    factorsList.appendChild(li);
+  }
+
+  if (data.warning) {
+    const li = document.createElement('li'); 
+    li.textContent = data.warning; 
+    factorsList.appendChild(li);
+  }
+
+  showScreen('screen-result');
+  tg.HapticFeedback.notificationOccurred(direction === 'CALL' ? 'success' : 'warning');
+}
+
+function formatNum(n, d) {
+  if (n === undefined || n === null) return '—';
+  const num = typeof n === 'string' ? parseFloat(n) : n;
+  return isNaN(num) ? '—' : num.toFixed(d);
+}
+
+function renderIndicators(ind) {
+  const grid = document.getElementById('indicators-grid');
+  grid.innerHTML = '';
+  if (!ind || Object.keys(ind).length === 0) { grid.style.display = 'none'; return; }
+  grid.style.display = 'grid';
+  const rows = [];
+  if (ind.rsi7 != null)  rows.push({ label: 'RSI(7):', value: formatNum(ind.rsi7, 2) });
+  if (ind.rsi14 != null) rows.push({ label: 'RSI(14):', value: formatNum(ind.rsi14, 2) });
+  if (ind.ema3 != null)  rows.push({ label: 'EMA3:', value: formatNum(ind.ema3, 5) });
+  if (ind.ema5 != null)  rows.push({ label: 'EMA5:', value: formatNum(ind.ema5, 5) });
+  if (ind.ema8 != null)  rows.push({ label: 'EMA8:', value: formatNum(ind.ema8, 5) });
+  if (ind.ema13 != null) rows.push({ label: 'EMA13:', value: formatNum(ind.ema13, 5) });
+  if (ind.ema21 != null) rows.push({ label: 'EMA21:', value: formatNum(ind.ema21, 5) });
+  if (ind.stoch != null) {
+    const k = ind.stoch.k !== undefined ? ind.stoch.k : (typeof ind.stoch === 'number' ? ind.stoch : null);
+    const d = ind.stoch.d !== undefined ? ind.stoch.d : null;
+    if (k !== null) rows.push({ label: 'Stoch K:', value: formatNum(k, 1) });
+    if (d !== null) rows.push({ label: 'Stoch D:', value: formatNum(d, 1) });
+  }
+  if (ind.macd != null) {
+    const val = ind.macd.MACD !== undefined ? ind.macd.MACD : (typeof ind.macd === 'number' ? ind.macd : null);
+    if (val !== null) rows.push({ label: 'MACD:', value: formatNum(val, 6) });
+  }
+  if (ind.atr != null)        rows.push({ label: 'ATR:', value: formatNum(ind.atr, 6) });
+  if (ind.bbPosition != null) rows.push({ label: 'BB pos:', value: (ind.bbPosition * 100).toFixed(0) + '%' });
+  if (ind.momentum != null)   rows.push({ label: 'Mom:', value: formatNum(ind.momentum, 6) });
+  if (ind.adx != null)        rows.push({ label: 'ADX:', value: formatNum(ind.adx, 1) });
+  if (ind.cci != null)        rows.push({ label: 'CCI:', value: formatNum(ind.cci, 1) });
+  if (ind.williamsR != null)  rows.push({ label: 'W%R:', value: formatNum(ind.williamsR, 1) });
+  if (ind.vwap != null)       rows.push({ label: 'VWAP:', value: formatNum(ind.vwap, 5) });
+  rows.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'indicator-row';
+    row.innerHTML = `<span class="indicator-label">${item.label}</span><span class="indicator-value">${item.value}</span>`;
+    grid.appendChild(row);
+  });
+}
+
+function renderOtcStats(otc) {
+  const box = document.getElementById('otc-stats-box');
+  const grid = document.getElementById('otc-stats-grid');
+  grid.innerHTML = '';
+  if (!otc) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const items = [];
+  if (otc.series) {
+    items.push({ label: 'Series bullish:', value: String(otc.series.type === 'green' ? otc.series.streak : 0) });
+    items.push({ label: 'Series bearish:', value: String(otc.series.type === 'red' ? otc.series.streak : 0) });
+  }
+  if (otc.ladder) {
+    items.push({ label: 'Ladder up:', value: otc.ladder.type === 'up' ? '✅' : '0' });
+    items.push({ label: 'Ladder down:', value: otc.ladder.type === 'down' ? '✅' : '0' });
+  }
+  if (otc.emaRetrace) {
+    items.push({ label: 'Pullback:', value: (otc.emaRetrace.type === 'bounce_up' || otc.emaRetrace.type === 'bounce_down') ? '✅ Yes' : 'No' });
+  }
+  if (otc.rsiDivergence) {
+    items.push({ label: 'RSI Divergence:', value: otc.rsiDivergence.type === 'none' ? '—' : otc.rsiDivergence.type });
+  }
+  if (items.length === 0) { box.style.display = 'none'; return; }
+  items.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'otc-stat-row';
+    const vClass = item.value === 'bullish' || item.value.includes('✅') ? 'bullish'
+      : item.value === 'bearish' ? 'bearish' : '';
+    row.innerHTML = `<span class="otc-stat-label">${item.label}</span><span class="otc-stat-value ${vClass}">${item.value}</span>`;
+    grid.appendChild(row);
+  });
+}
+
+document.getElementById('btn-back-pairs').addEventListener('click', () => {
+  showScreen('screen-main'); tg.HapticFeedback.impactOccurred('light');
+});
+document.getElementById('btn-to-menu').addEventListener('click', () => {
+  state.selectedPair = null; state.selectedTimeframe = null;
+  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('btn-get-signal').disabled = true;
+  showScreen('screen-main'); tg.HapticFeedback.impactOccurred('light');
+});
+document.getElementById('btn-cooldown-menu').addEventListener('click', () => {
+  clearInterval(cooldownInterval); showScreen('screen-main');
+});
+
+loadPairs('all');
+console.log('✅ WebApp v4 ініціалізовано');
